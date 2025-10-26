@@ -41,7 +41,7 @@ class BaseLoader(ABC):
     # ③ 通用工具：在一个目录下发现“本 Loader 支持的所有文件”
     @classmethod
     def discover_files(cls, root: Path | str) -> List[Path]:
-         """
+        """
         给定一个目录或单个文件路径，返回“当前 Loader 支持的所有文件列表”。
         - 若是目录：递归地查找所有允许的扩展名（allowed_exts）
         - 若是单个文件：仅当扩展名被支持时才返回
