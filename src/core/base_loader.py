@@ -99,6 +99,7 @@ class BaseLoader(ABC):
         return out_dir / f"{stem}.docjson" #拼接输出路径
     
     # ⑥ 通用工具：批量把 RawDoc 写成 .docjson 文件
+    # 流式场景下无需调用
     @classmethod
     def save(
         cls,
@@ -145,18 +146,18 @@ class BaseLoader(ABC):
 
         return written
     
-    # ⑦ 一键运行：发现文件 → 加载 → （可选）保存
+    # ⑦ 一键运行：发现文件 → 加载 → （可选）保存（不传out_dir就不存docjson）
     def run(
         self,
         in_paths_or_dir: Sequence[Path | str] | Path | str,
         out_dir: Optional[Path | str] = None,
         options: Optional[Dict[str, Any]] = None,
-    ) -> Union[List[RawDoc], List[Path]]:
+    ) -> Union[Iterable[RawDoc], List[Path]]:
         """
         一键执行流程：发现 -> 加载 ->（可选）保存
         返回：
-          - 若 out_dir 为 None：返回 List[RawDoc]（会 materialize docs）
-          - 若指定 out_dir：返回写出的文件路径列表 List[Path]
+          - 若 out_dir 为 None：返回 Iterable[RawDoc]（streaming，不会立即 materialize）
+          - 若指定 out_dir：返回写出的文件路径列表 List[Path]（一般不保存，直接走pipeline）
         """
         # Step 1: 规范化输入并展开目录（单个或序列中的目录都会展开）
         candidates: List[Path] = []
@@ -177,7 +178,7 @@ class BaseLoader(ABC):
         # Step 2: 归一化 allowed_exts 并过滤存在性与后缀
         exts = { (e if e.startswith('.') else f".{e}").lower() for e in self.allowed_exts() }
         valid_paths: List[Path] = []
-        # 你可以收集 skipped 用于日志/返回
+        # 可以收集 skipped 用于日志/返回
         skipped: List[tuple[str, str]] = []
         for p in candidates:
             if not p.exists() or not p.is_file():
@@ -194,7 +195,7 @@ class BaseLoader(ABC):
         # Step 4: 如果没指定 out_dir，仅返回数据（内存模式）
         if out_dir is None:
             # materialize：注意大数据会占内存，必要时改为直接返回 iterable
-            return list(docs)
+            return docs
 
         # Step 5: 写入文件并返回写出的路径
         return self.save(docs, Path(out_dir))
