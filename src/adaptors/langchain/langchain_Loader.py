@@ -1,135 +1,206 @@
-from pathlib import Path
-from typing import Sequence, Optional, Dict, Iterable, Any
-import logging
+"""
+Langchain Loader 适配器
 
-# 以绝对导入 core，确保运行时 PYTHONPATH 包含 src
-from core.base_loader import BaseLoader
+职责：
+- 封装 Langchain 的文档加载器
+- 继承 BaseLoader，提供统一接口
+- 处理不同文件类型
+
+支持的文件类型：
+- PDF: PyPDFLoader
+- Word: Docx2txtLoader
+- Text: TextLoader
+- Markdown: UnstructuredMarkdownLoader
+"""
+
+import logging
+from pathlib import Path
+from typing import Iterable, Sequence, Dict, Any, Optional
+
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    Docx2txtLoader,
+    TextLoader,
+    UnstructuredMarkdownLoader,
+)
+
 from core.types import RawDoc
+from core.base_loader import BaseLoader
 
 logger = logging.getLogger(__name__)
 
 
 class LangchainLoaderAdapter(BaseLoader):
     """
-    LangChain adapter loader: 按文件后缀选择合适的 LangChain loader，
-    将 LangChain Document 映射成项目的 RawDoc 并以 generator 流式产出。
-    延迟导入具体 LangChain loader，以避免在不需要时强制安装依赖。
+    Langchain 文档加载器适配器
+    
+    继承 BaseLoader，提供统一的文档加载接口
+    支持 PDF、Word、Text、Markdown 等格式
     """
-
+    
+    # ========================================
+    # ① 覆写：声明支持的文件扩展名
+    # ========================================
     @classmethod
     def allowed_exts(cls) -> tuple[str, ...]:
-        return (".txt", ".pdf", ".md", ".docx", ".html")
-
-    def __init__(self, loader_kwargs: Optional[Dict[str, Any]] = None):
-        self.loader_kwargs = dict(loader_kwargs) if loader_kwargs else {}
-        self._loader_factories: Dict[str, Optional[callable]] = {}
+        """声明当前 Loader 支持的文件扩展名"""
+        return (".pdf", ".docx", ".txt", ".md")
+    
+    def __init__(self):
+        """初始化 Loader 适配器"""
+        super().__init__()
         
-        # 默认 encoding 用于文本类文件
-        self._default_text_encoding = "utf-8"
-
-    def _get_kwargs_for_loader(self, ext: str) -> Dict[str, Any]:
-        """根据文件类型返回合适的 kwargs"""
-        # 二进制格式不需要 encoding
-        binary_formats = {".pdf", ".docx"}
+        # 定义扩展名到 Loader 类的映射
+        self._loader_map = {
+            '.pdf': PyPDFLoader,
+            '.docx': Docx2txtLoader,
+            '.txt': TextLoader,
+            '.md': UnstructuredMarkdownLoader,
+        }
         
-        if ext in binary_formats:
-            return {k: v for k, v in self.loader_kwargs.items() if k != "encoding"}
+        logger.info(f"LangchainLoaderAdapter initialized with {len(self._loader_map)} supported formats")
+    
+    def _get_loader_config(self, ext: str) -> Dict[str, Any]:
+        """
+        根据文件扩展名获取 Loader 配置
+        
+        Args:
+            ext: 文件扩展名（如 '.txt', '.pdf'）
+        
+        Returns:
+            Dict[str, Any]: Loader 配置字典
+        
+        规则：
+        - .txt: 需要指定编码，使用 autodetect_encoding
+        - .pdf: 不需要额外配置
+        - .docx: 不需要额外配置
+        - .md: 不需要额外配置
+        """
+        if ext == '.txt':
+            # TextLoader 需要编码配置
+            return {
+                'encoding': 'utf-8',
+                'autodetect_encoding': True  # 自动检测编码
+            }
+        elif ext == '.pdf':
+            # PyPDFLoader 不需要编码参数
+            return {}
+        elif ext == '.docx':
+            # Docx2txtLoader 不需要编码参数
+            return {}
+        elif ext == '.md':
+            # UnstructuredMarkdownLoader 不需要编码参数
+            return {}
         else:
-            # 文本格式，添加默认 encoding
-            kwargs = self.loader_kwargs.copy()
-            if "encoding" not in kwargs:
-                kwargs["encoding"] = self._default_text_encoding
-            return kwargs
-
-    def _probe_and_cache_factory(self, ext: str):
-        """探测并缓存 ext 对应的 loader factory（只做一次）。"""
-        ext = ext.lower()
-        if ext in self._loader_factories:
-            return self._loader_factories[ext] # 已探测过
-
-        factory = None
-        loader_kwargs = self._get_kwargs_for_loader(ext)
+            return {}
+    
+    # ========================================
+    # ② 实现抽象方法：load()
+    # ========================================
+    def load(
+        self,
+        paths: Sequence[Path],
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Iterable[RawDoc]:
+        """
+        加载文件并返回 RawDoc 序列（生成器，内存友好）
         
-        try:
-            if ext == ".txt":
-                try:
-                    from langchain_community.document_loaders import TextLoader
-                except ImportError:
-                    from langchain.document_loaders import TextLoader
-                factory = lambda p: TextLoader(str(p), **loader_kwargs)
+        实现 BaseLoader 的抽象方法
+        
+        Args:
+            paths: 文件路径列表
+            options: 可选配置参数（保留，暂未使用）
+        
+        Yields:
+            RawDoc: 文档对象
+        """
+        logger.info(f"Loading {len(paths)} file(s)")
+        
+        for file_path in paths:
+            # 验证文件存在性
+            if not file_path.exists():
+                logger.warning(f"File not found: {file_path}")
+                continue
             
-            elif ext == ".pdf":
-                try:
-                    from langchain_community.document_loaders import PyPDFLoader
-                except ImportError:
-                    from langchain.document_loaders import PyPDFLoader
-                factory = lambda p: PyPDFLoader(str(p), **loader_kwargs)
-
-            elif ext == ".md":
-                try:
-                    from langchain_community.document_loaders import UnstructuredMarkdownLoader
-                    factory = lambda p: UnstructuredMarkdownLoader(str(p), **loader_kwargs)
-                except ImportError:
-                    try:
-                        from langchain_community.document_loaders import MarkdownLoader
-                    except ImportError:
-                        from langchain.document_loaders import MarkdownLoader
-                    factory = lambda p: MarkdownLoader(str(p), **loader_kwargs)
-
-            elif ext == ".docx":
-                try:
-                    from langchain_community.document_loaders import UnstructuredWordDocumentLoader
-                    factory = lambda p: UnstructuredWordDocumentLoader(str(p), **loader_kwargs)
-                except ImportError:
-                    try:
-                        from langchain_community.document_loaders import Docx2txtLoader
-                    except ImportError:
-                        from langchain.document_loaders import Docx2txtLoader
-                    factory = lambda p: Docx2txtLoader(str(p), **loader_kwargs)
-
-            elif ext == ".html":
-                try:
-                    from langchain_community.document_loaders import BSHTMLLoader
-                except ImportError:
-                    from langchain.document_loaders import BSHTMLLoader
-                factory = lambda p: BSHTMLLoader(str(p), **loader_kwargs)
-
-        except ImportError as e:
-            logger.debug(f"Failed to import loader for {ext}: {e}")
-            factory = None
-
-        self._loader_factories[ext] = factory
-        return factory
-
-    def _get_loader_for_path(self, path: Path):
-        """为给定路径返回对应的 LangChain loader 实例（或 None）。"""
-        ext = path.suffix.lower()
-        factory = self._probe_and_cache_factory(ext)
-        if factory is None:
-            logger.warning(f"no langchain loader for {path}, skipping")
-            return None
-        return factory(path)
-
-    def load(self, paths: Sequence[Path]) -> Iterable[RawDoc]:
-        """
-        遍历路径列表，为每个路径获取 loader 并读取 LangChain Document，
-        映射为 RawDoc 并流式产出。
-        """
-        for path in paths:
-            loader_instance = self._get_loader_for_path(path)
-            if loader_instance is None:
+            # 获取文件扩展名
+            ext = file_path.suffix.lower()
+            
+            # 选择对应的 Loader 类
+            loader_class = self._loader_map.get(ext)
+            if not loader_class:
+                logger.warning(f"No loader found for extension: {ext}")
                 continue
-
+            
+            # 实例化 Langchain Loader
             try:
-                lc_docs = loader_instance.load()
-                for lc_doc in lc_docs:
-                    yield RawDoc(
-                        text=lc_doc.page_content,
-                        metadata={
-                            "source_path": str(path),
-                            **lc_doc.metadata
-                        }
+                # ← 关键：根据文件类型获取配置
+                loader_config = self._get_loader_config(ext)
+                
+                # 创建 Loader 实例
+                if loader_config:
+                    logger.debug(f"Creating {loader_class.__name__} with config: {loader_config}")
+                    loader = loader_class(str(file_path), **loader_config)
+                else:
+                    logger.debug(f"Creating {loader_class.__name__} without config")
+                    loader = loader_class(str(file_path))
+                
+                logger.debug(f"Loading {file_path.name} with {loader_class.__name__}")
+                
+                # 加载文档
+                langchain_docs = loader.load()
+                
+                # 检查是否为空
+                if not langchain_docs:
+                    logger.warning(f"No documents loaded from {file_path.name} (file might be empty)")
+                    continue
+                
+                # 转换为 RawDoc 对象并 yield
+                page_count = 0
+                for doc in langchain_docs:
+                    # 检查内容是否为空
+                    if not doc.page_content or not doc.page_content.strip():
+                        logger.debug(f"Skipping empty document from {file_path.name}")
+                        continue
+                    
+                    raw_doc = RawDoc(
+                        text=doc.page_content,
+                        metadata=doc.metadata
                     )
+                    page_count += 1
+                    yield raw_doc
+                
+                if page_count > 0:
+                    logger.info(f"Loaded {page_count} page(s) from {file_path.name}")
+                else:
+                    logger.warning(f"No valid documents found in {file_path.name}")
+                
             except Exception as e:
-                logger.exception(f"Error loading {path}: {e}")
+                logger.error(f"Failed to load {file_path.name}: {e}")
+                logger.debug(f"Traceback:", exc_info=True)
                 continue
+    
+    # ========================================
+    # ③ 新增：获取解析器名称（可选，用于数据库记录）
+    # ========================================
+    def get_parser_name(self, file_path: Path) -> str:
+        """
+        获取文件对应的解析器名称
+        
+        用于数据库的 parser_profile 字段
+        
+        Args:
+            file_path: 文件路径
+        
+        Returns:
+            str: 解析器名称（如 'pdf', 'docx', 'txt'）
+        """
+        ext = file_path.suffix.lower()
+        
+        parser_map = {
+            '.pdf': 'pdf_parser',
+            '.docx': 'docx_parser',
+            '.txt': 'txt_parser',
+            '.md': 'markdown_parser',
+        }
+        
+        return parser_map.get(ext, 'unknown')
